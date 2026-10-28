@@ -7,6 +7,7 @@ const workspaceRoot = path.join(__dirname, "../../../..");
 /** @type {import('next').NextConfig} */
 const nextConfig = {
 	output: "export",
+	distDir: process.env.GPTCODE_NEXT_BUILD_DIR || ".next",
 	devIndicators: false,
 	outputFileTracingRoot: workspaceRoot,
 	turbopack: {

@@ -2,8 +2,7 @@
 
 import { FitAddon } from "@xterm/addon-fit";
 import { type ITheme, Terminal } from "@xterm/xterm";
-import { isTauriAvailable } from "@/lib/desktop-client";
-import { isMacPlatform } from "@/lib/keybindings";
+import { isTauriAvailable, isMacPlatform } from "@/lib/native-platform";
 
 /**
  * Terminal tabs live outside React, keyed by the directory they were opened
@@ -11,6 +10,7 @@ import { isMacPlatform } from "@/lib/keybindings";
  * same shell and scrollback instead of spawning a new one.
  */
 export type TerminalTab = {
+	agent?: boolean;
 	id: string;
 	cwd: string;
 	label: string;
@@ -162,7 +162,10 @@ function readMonoFontFamily(): string {
 	return value || "ui-monospace, Menlo, Consolas, monospace";
 }
 
-export function createTerminalTab(cwd: string): TerminalTab {
+export function createTerminalTab(
+	cwd: string,
+	options: { agent?: boolean } = {},
+): TerminalTab {
 	const key = normalizeTerminalCwd(cwd);
 	const existing = tabsByCwd.get(key) ?? [];
 	const term = new Terminal({
@@ -198,9 +201,10 @@ export function createTerminalTab(cwd: string): TerminalTab {
 	const element = document.createElement("div");
 	element.className = "h-full w-full";
 	const tab: TerminalTab = {
+		agent: options.agent,
 		id: `term_${Date.now().toString(36)}_${nextTabNumber++}`,
 		cwd: key,
-		label: tabLabel(key, existing),
+		label: options.agent ? "GPTCode" : tabLabel(key, existing),
 		term,
 		fit,
 		element,
@@ -317,6 +321,7 @@ export async function spawnTerminalTab(tab: TerminalTab): Promise<void> {
 	try {
 		await invoke("terminal_spawn", {
 			options: {
+				agent: tab.agent ?? false,
 				id: tab.id,
 				cwd: tab.cwd === "~" ? null : tab.cwd,
 				cols: tab.term.cols,

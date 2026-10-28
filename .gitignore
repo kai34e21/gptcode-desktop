@@ -90,6 +90,8 @@ apps/vscode/tsconfig.test.generated.json
 apps/examples/desktop-app/src-tauri/target
 apps/examples/desktop-app/src-tauri/dmg/background.gen.tiff
 apps/examples/desktop-app/webview/.next
+apps/examples/desktop-app/webview/.next-gptcode-release
+apps/examples/desktop-app/gptcode-e2e-report
 
 # Next.js generated type shim (churns between dev and build)
 apps/examples/desktop-app/webview/next-env.d.ts

@@ -1,0 +1,10 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "GPTCode Desktop",
+  "version": "0.1.0",
+  "identifier": "it.gptcode.desktop.app",
+  "build": { "beforeBuildCommand": "bun run scripts/build-gptcode.ts", "frontendDist": "../webview/.next-gptcode-release" },
+  "plugins": { "updater": { "endpoints": [] } },
+  "bundle": { "externalBin": [], "resources": ["bin/gptcode-runtime/**/*"], "targets": ["nsis"], "homepage": "https://github.com/kai34e21/gptcode-desktop", "shortDescription": "Editor e agente GPTCode", "longDescription": "Editor con chat GPTCode, language server TypeScript e JavaScript e debugger Node.js." },
+  "app": { "windows": [{ "label": "main", "url": "gptcode.html", "title": "GPTCode Desktop", "width": 1500, "height": 980, "resizable": true, "dragDropEnabled": false }] }
+}

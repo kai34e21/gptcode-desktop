@@ -7,8 +7,14 @@ import { HUB_THEME_BOOTSTRAP_SCRIPT } from "@/lib/theme";
 import "./globals.css";
 
 export const metadata: Metadata = {
-	title: "Cline",
-	description: "Build software with Cline.",
+	title:
+		process.env.NEXT_PUBLIC_GPTCODE_DESKTOP === "1"
+			? "GPTCode Desktop"
+			: "Cline",
+	description:
+		process.env.NEXT_PUBLIC_GPTCODE_DESKTOP === "1"
+			? "Editor e agente GPTCode."
+			: "Build software with Cline.",
 	icons: {
 		icon: [
 			{
@@ -55,7 +61,9 @@ export default function RootLayout({
 				/>
 			</head>
 			<body className="h-full min-h-screen font-sans antialiased">
-				<DesktopErrorTelemetry />
+				{process.env.NEXT_PUBLIC_GPTCODE_DESKTOP !== "1" && (
+					<DesktopErrorTelemetry />
+				)}
 				<NativeShell />
 				{children}
 				<Toaster />

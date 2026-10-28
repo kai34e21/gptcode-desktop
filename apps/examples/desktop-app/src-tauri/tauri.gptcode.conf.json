@@ -1,0 +1,13 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "GPTCode Desktop",
+  "version": "0.1.0",
+  "identifier": "it.gptcode.desktop.dev",
+  "build": {
+    "beforeDevCommand": "bun run dev:web",
+    "devUrl": "http://localhost:3125/gptcode"
+  },
+  "plugins": { "updater": { "endpoints": [] } },
+  "bundle": { "externalBin": [], "resources": [] },
+  "app": { "windows": [{ "label": "main", "title": "GPTCode Desktop", "width": 1500, "height": 980, "resizable": true, "dragDropEnabled": false }] }
+}

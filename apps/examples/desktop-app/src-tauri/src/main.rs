@@ -7,6 +7,8 @@ mod linux_webview;
 #[cfg(target_os = "macos")]
 mod macos_notification;
 mod terminal;
+mod gptcode;
+mod gptcode_runtime;
 
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -252,6 +254,7 @@ fn set_update_status(
 // An empty endpoint list disables both background and on-demand updates.
 // Nightly builds use this configuration because they are Actions artifacts only.
 fn updates_enabled(app: &tauri::AppHandle) -> bool {
+    if std::env::var_os("GPTCODE_DESKTOP").is_some() { return false; }
     app.config()
         .plugins
         .0
@@ -1618,6 +1621,9 @@ fn main() {
         .manage(Arc::new(UpdateState::default()))
         .manage(DesktopActionState::default())
         .manage(terminal::TerminalState::default())
+        .manage(gptcode::Workspace::default())
+        .manage(gptcode::EditorDirty::default())
+        .manage(Arc::new(gptcode_runtime::Runtime::default()))
         .setup(move |app| {
             app.manage(AppContext {
                 launch_cwd: launch_cwd.clone(),
@@ -1656,6 +1662,7 @@ fn main() {
             #[cfg(target_os = "macos")]
             setup_application_menu(app, check_for_updates.as_ref())?;
             setup_tray_icon(app, check_for_updates)?;
+            if std::env::var_os("GPTCODE_DESKTOP").is_some() || app.config().identifier.starts_with("it.gptcode.desktop") { return Ok(()); }
             let app_context = app.state::<AppContext>().inner().clone();
             let backend_state = app.state::<Arc<DesktopBackendState>>().inner().clone();
             let state_for_start = backend_state.clone();
@@ -1703,6 +1710,13 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            gptcode_runtime::gptcode_runtime,
+            gptcode_runtime::gptcode_runtime_stop,
+            gptcode::gptcode_workspace,
+            gptcode::gptcode_dirty,
+            gptcode::gptcode_entries,
+            gptcode::gptcode_read,
+            gptcode::gptcode_save,
             get_desktop_backend_endpoint,
             pick_workspace_directory,
             open_mcp_settings_file,
@@ -1723,7 +1737,19 @@ fn main() {
             terminal::terminal_kill_all,
             terminal::terminal_windows_build
         ])
-        .build(tauri::generate_context!())
+        .build({
+            let mut context = tauri::generate_context!();
+            if cfg!(feature = "qa-webview") && std::env::var_os("GPTCODE_QA_HIDDEN").is_some() {
+                context.config_mut().identifier = format!("it.gptcode.desktop.qa.{}", std::process::id());
+                for window in &mut context.config_mut().app.windows {
+                    window.visible = false;
+                    window.devtools = Some(true);
+                    window.additional_browser_args = std::env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").ok();
+                    window.data_directory = std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").map(PathBuf::from);
+                }
+            }
+            context
+        })
         .expect("error while building tauri app")
         .run(|app_handle, event| match event {
             #[cfg(target_os = "macos")]
@@ -1731,7 +1757,19 @@ fn main() {
                 has_visible_windows: false,
                 ..
             } => show_main_window(app_handle),
-            RunEvent::ExitRequested { .. } | RunEvent::Exit => {
+            RunEvent::ExitRequested { api, .. } => {
+                if *app_handle.state::<gptcode::EditorDirty>().0.lock().unwrap_or_else(|e| e.into_inner()) {
+                    let choice = rfd::MessageDialog::new().set_title("Modifiche non salvate")
+                        .set_description("Ci sono modifiche non salvate nell’editor. Vuoi uscire e scartarle?")
+                        .set_buttons(rfd::MessageButtons::YesNo).show();
+                    if choice != rfd::MessageDialogResult::Yes { api.prevent_exit(); return; }
+                }
+                app_handle.state::<Arc<gptcode_runtime::Runtime>>().stop();
+                app_handle.state::<terminal::TerminalState>().kill_all();
+                app_handle.state::<Arc<DesktopBackendState>>().inner().stop();
+            }
+            RunEvent::Exit => {
+                app_handle.state::<Arc<gptcode_runtime::Runtime>>().stop();
                 app_handle.state::<terminal::TerminalState>().kill_all();
                 app_handle
                     .state::<Arc<DesktopBackendState>>()

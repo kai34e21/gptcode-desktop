@@ -58,6 +58,8 @@ pub struct SpawnOptions {
     cwd: Option<String>,
     cols: u16,
     rows: u16,
+    #[serde(default)]
+    agent: bool,
 }
 
 fn home_dir() -> Option<PathBuf> {
@@ -175,6 +177,7 @@ fn windows_build_number() -> Option<u32> {
 
 #[tauri::command]
 pub fn terminal_spawn(
+    app: tauri::AppHandle,
     state: State<'_, TerminalState>,
     options: SpawnOptions,
     on_event: Channel<TerminalEvent>,
@@ -189,7 +192,15 @@ pub fn terminal_spawn(
         })
         .map_err(|error| format!("Failed to open a pseudo-terminal: {error}"))?;
 
-    let mut cmd = shell_command();
+    let mut cmd = if options.agent {
+        use tauri::Manager;
+        let cli_path = crate::gptcode::cli_path()?;
+        let bundled_node = app.path().resource_dir().map_err(|e| e.to_string())?.join("bin/gptcode-runtime/node.exe");
+        let node = std::env::var_os("GPTCODE_NODE_PATH").map(PathBuf::from).unwrap_or_else(|| if bundled_node.is_file() { bundled_node } else { PathBuf::from("node") });
+        let mut command = CommandBuilder::new(node);
+        command.arg(cli_path);
+        command
+    } else { shell_command() };
     if let Some(cwd) = resolve_cwd(options.cwd.as_deref()) {
         cmd.cwd(cwd);
     }

@@ -1,0 +1,6 @@
+{
+  "extends": "./webview/tsconfig.json",
+  "compilerOptions": { "incremental": false, "plugins": [] },
+  "include": ["webview/components/gptcode/**/*.ts", "webview/components/gptcode/**/*.tsx", "webview/app/gptcode/**/*.tsx", "webview/lib/gptcode-runtime.ts", "webview/lib/native-platform.ts"],
+  "exclude": ["node_modules"]
+}

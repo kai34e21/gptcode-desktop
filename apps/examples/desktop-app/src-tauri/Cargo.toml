@@ -31,6 +31,7 @@ zbus = "5"
 [target."cfg(windows)".dependencies]
 # Same version portable-pty already pulls in; reads the Windows build number.
 winreg = "0.10"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security"] }
 
 [target."cfg(target_os = \"macos\")".dependencies]
 objc2 = "0.6"
@@ -40,3 +41,4 @@ objc2-foundation = { version = "0.3", features = ["NSString"] }
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+qa-webview = ["tauri/devtools"]
