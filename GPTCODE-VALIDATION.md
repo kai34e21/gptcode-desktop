@@ -1,4 +1,4 @@
-# Verifica GPTCode Desktop 0.1.0
+# Verifica GPTCode Desktop 0.2.0
 
 Base upstream: f817e59f698f01487920c00ede2dbecad5c0fa50.
 
@@ -6,9 +6,9 @@ Base upstream: f817e59f698f01487920c00ede2dbecad5c0fa50.
 
 - Build SDK, frontend statico e installer Windows riuscite.
 - check:gptcode: TypeScript del workbench e delle sue dipendenze superato.
-- Vitest: 15 test su editor, chat, permessi, URI e diff; 7 sono del diff upstream.
+- Vitest: 18 test su editor, chat, permessi, URI e diff; 7 sono del diff upstream.
   I test dei pannelli usano IPC simulato: non sono da soli prova della GUI nativa.
-- Runtime: 4 test passati anche con worker e Node copiati fuori dal repository.
+- Runtime: 12 test passati anche con worker e Node copiati fuori dal repository.
   LSP: diagnostica, completamenti, hover e definizioni reali su buffer non salvati.
   Inspector: breakpoint, scope, valutazione e arresto di un programma Node reale.
   Chat: agente GPTCode reale, provider HTTP locale simulato, permessi negati/autorizzati,
@@ -62,3 +62,23 @@ Unknown: inferenza esterna e installazione nel profilo utente.
 Outcome: editor, chat GPTCode, LSP TS/JS, debugger Node e pacchetto Windows integrati.
 Regression guard: salvataggio/concorrenza, permessi, URI, percorsi e runtime distribuito.
 Ledger: incidenti di packaging registrati nella memoria locale del progetto.
+
+
+## Verifica aggiuntiva live 0.2.0
+
+- Stream HTTP trattenuto a metà: proposta nel codice, nel diff e nell'anteprima prima
+  dell'evento finale e della richiesta di permesso. Il file non esiste ancora su disco.
+- Completamento dello stream: seconda parte visibile, file ancora assente fino al consenso.
+- Consenso nella chat: file scritto dal vero agente e anteprima interattiva, non una foto.
+- Modifica successiva al file: codice, diff e anteprima aggiornati senza Ricarica.
+- Modifica non salvata dell'utente: conservata anche quando il file su disco e la preview cambiano.
+- Frame con script abilitati: tentativo innocuo di cambiare il progetto nativo rifiutato,
+  verificando lo stato dall'IPC del frame principale, non solo cercando un oggetto JavaScript.
+- Tap trasporto: bytes/header conservati e nessuna richiesta modello aggiuntiva nel test.
+- Casi unitari per JSON parziale/escape, tre dialetti SSE, permesso negato, file sensibili,
+  traversal, token di anteprima e URL locali.
+
+Il collaudo usa il motore GPTCode reale e un provider locale simulato. Le prove dei tre
+parser di protocollo non equivalgono a verifiche live con tre servizi cloud distinti.
+L'anteprima automatica è HTML; per un'app con server è necessario avviarlo e collegarne
+l'URL locale. Nessuna animazione di digitazione viene presentata come stream reale.

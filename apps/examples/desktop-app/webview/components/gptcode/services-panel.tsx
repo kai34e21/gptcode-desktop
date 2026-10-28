@@ -79,6 +79,7 @@ function ChatPanel({ root, file }: Props) {
 	const [busy, setBusy] = useState(false),
 		[ready, setReady] = useState(false),
 		[error, setError] = useState("");
+	const [resetting, setResetting] = useState(false);
 	const [model, setModel] = useState(""),
 		[models, setModels] = useState<{ id: string; name: string }[]>([]);
 	const [mode, setMode] = useState("default"),
@@ -189,7 +190,7 @@ function ChatPanel({ root, file }: Props) {
 		};
 	}, [root]);
 	async function send() {
-		if (!prompt.trim() || busy) return;
+		if (!prompt.trim() || busy || resetting) return;
 		let text = prompt.trim();
 		if (includeFile && file)
 			text += `\n\nFile corrente${file.dirty ? " (buffer non salvato)" : ""}: ${file.path}\n\`\`\`\n${file.text}\n\`\`\``;
@@ -228,7 +229,7 @@ function ChatPanel({ root, file }: Props) {
 					<select
 						aria-label="Modello GPTCode"
 						className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 text-xs"
-						disabled={busy || !!session}
+						disabled={busy || !!session || resetting}
 						value={model}
 						onChange={(e) => setModel(e.target.value)}
 					>
@@ -246,8 +247,9 @@ function ChatPanel({ root, file }: Props) {
 						variant="ghost"
 						title="Nuova chat"
 						aria-label="Nuova chat"
-						disabled={busy}
-						onClick={() =>
+						disabled={busy || resetting}
+						onClick={() => {
+							setResetting(true);
 							void runtime("chat.reset")
 								.then(() => {
 									setSession("");
@@ -258,7 +260,8 @@ function ChatPanel({ root, file }: Props) {
 									setReasoning("");
 								})
 								.catch((e) => setError(errorText(e)))
-						}
+								.finally(() => setResetting(false));
+						}}
 					>
 						<Plus size={14} />
 					</Button>
@@ -469,7 +472,11 @@ function ChatPanel({ root, file }: Props) {
 							Stop
 						</Button>
 					) : (
-						<Button type="submit" size="sm" disabled={!ready || !prompt.trim()}>
+						<Button
+							type="submit"
+							size="sm"
+							disabled={!ready || !prompt.trim() || resetting}
+						>
 							<Send size={12} />
 							Invia
 						</Button>

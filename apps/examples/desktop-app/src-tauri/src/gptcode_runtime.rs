@@ -1,4 +1,4 @@
-//! A supervised stdio worker: no local HTTP listener and no credentials in IPC.
+//! A supervised stdio worker: command IPC stays off HTTP; web previews use a separate loopback origin.
 use serde_json::{json, Value};
 use std::{collections::HashMap, io::{BufRead, BufReader, Write}, path::PathBuf,
     process::{Child, ChildStdin, Command, Stdio}, sync::{Arc, Mutex, mpsc}, time::Duration};

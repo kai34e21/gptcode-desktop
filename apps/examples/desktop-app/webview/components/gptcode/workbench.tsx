@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import {
 	ChevronDown,
 	ChevronRight,
+	Eye,
 	FileCode2,
 	Folder,
 	FolderOpen,
@@ -18,18 +19,33 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { TerminalPanel } from "@/components/terminal-panel";
 import { Button } from "@/components/ui/button";
+import {
+	ResizableHandle,
+	ResizablePanel,
+	ResizablePanelGroup,
+} from "@/components/ui/resizable";
 import { CodeDiff } from "@/components/views/chat/highlighted-code";
+import { runtime, subscribeRuntime } from "@/lib/gptcode-runtime";
 import { isTauriAvailable } from "@/lib/native-platform";
 import {
 	createTerminalTab,
 	killTerminalTab,
 	listTerminalTabs,
 } from "@/lib/terminal-sessions";
+import {
+	applyDiskChange,
+	applyDraft,
+	type EditorBuffer,
+	type FileChange,
+	type LiveDraft,
+	phaseLabel,
+} from "./live-state";
+import PreviewPanel from "./preview-panel";
 import ServicesPanel from "./services-panel";
 
 const CodeEditor = dynamic(() => import("./code-editor"), { ssr: false });
 type Entry = { name: string; path: string; directory: boolean };
-type Buffer = { path: string; base: string; text: string; saving: boolean };
+type Buffer = EditorBuffer;
 const name = (path: string) => path.split(/[\\/]/).pop() ?? path;
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -122,6 +138,16 @@ export default function Workbench() {
 	const [diff, setDiff] = useState(false);
 	const [height, setHeight] = useState(350);
 	const [terminal, setTerminal] = useState(true);
+	const [drafts, setDrafts] = useState<Record<string, LiveDraft>>({});
+	const [viewMode, setViewMode] = useState<"auto" | "buffer" | "proposal">(
+		"auto",
+	);
+	const [followAgent, setFollowAgent] = useState(true);
+	const followRef = useRef(followAgent);
+	followRef.current = followAgent;
+	const [previewOpen, setPreviewOpen] = useState(false);
+	const autoPreview = useRef(true);
+	const [vertical, setVertical] = useState(false);
 	const [breakpoints, setBreakpoints] = useState<Record<string, number[]>>({});
 	const [paused, setPaused] = useState<{ path: string; line: number } | null>(
 		null,
@@ -131,6 +157,113 @@ export default function Workbench() {
 	const saving = useRef(new Set<string>());
 	const current = buffers.find((buffer) => buffer.path === active);
 	const dirty = buffers.some((buffer) => buffer.text !== buffer.base);
+	const draft = Object.values(drafts)
+		.filter((item) => item.path === active)
+		.sort((a, b) => b.version - a.version)[0];
+	const proposing = Boolean(
+		draft &&
+			draft.phase !== "saved" &&
+			viewMode !== "buffer" &&
+			(viewMode === "proposal" || current?.text === current?.base),
+	);
+	const displayedText =
+		proposing && draft ? draft.after : (current?.text ?? "");
+	useEffect(() => {
+		const media = window.matchMedia("(max-width: 1199px)");
+		const update = () => setVertical(media.matches);
+		update();
+		media.addEventListener("change", update);
+		return () => media.removeEventListener("change", update);
+	}, []);
+	useEffect(() => {
+		if (!root) return;
+		let disposed = false;
+		let unsubscribe: (() => void) | undefined;
+		const followed = new Set<string>(),
+			versions = new Map<string, number>(),
+			draftVersions = new Map<string, number>();
+		const activityOpened = new Set<string>();
+		const receiveDraft = (item: LiveDraft) => {
+			if (disposed || (draftVersions.get(item.callId) ?? -1) >= item.version)
+				return;
+			draftVersions.set(item.callId, item.version);
+			setDrafts((previous) =>
+				previous[item.callId]?.version >= item.version
+					? previous
+					: { ...previous, [item.callId]: item },
+			);
+			setBuffers((previous) => applyDraft(previous, item));
+			if (followRef.current && !followed.has(item.callId)) {
+				followed.add(item.callId);
+				setActive(item.path);
+				setViewMode("auto");
+				setDiff(false);
+			}
+			if (
+				autoPreview.current &&
+				/\.html?$/i.test(item.path) &&
+				["streaming", "approval"].includes(item.phase)
+			)
+				setPreviewOpen(true);
+			setStatus(`${phaseLabel[item.phase]} · ${name(item.path)}`);
+		};
+		const receiveFile = (item: FileChange) => {
+			if (disposed || (versions.get(item.path) ?? -1) >= item.version) return;
+			versions.set(item.path, item.version);
+			if (
+				item.source === "activity" &&
+				item.text !== null &&
+				followRef.current &&
+				!activityOpened.has(item.path) &&
+				!buffersRef.current.some((buffer) => buffer.path === item.path)
+			) {
+				activityOpened.add(item.path);
+				setActive(item.path);
+				setViewMode("auto");
+				setDiff(false);
+			}
+			setBuffers((previous) => applyDiskChange(previous, item));
+			setRefresh((n) => n + 1);
+		};
+		void subscribeRuntime((event) => {
+			if (event.event === "workspace.draft")
+				receiveDraft(event.payload as LiveDraft);
+			if (event.event === "workspace.file")
+				receiveFile(event.payload as FileChange);
+			if (event.event === "workspace.asset") setRefresh((n) => n + 1);
+			if (event.event === "workspace.error") setError(event.payload.message);
+			if (event.event === "runtime.closed") {
+				versions.clear();
+				draftVersions.clear();
+				setDrafts((previous) =>
+					Object.fromEntries(
+						Object.entries(previous).map(([key, item]) => [
+							key,
+							{ ...item, phase: "cancelled", version: -1 },
+						]),
+					),
+				);
+			}
+		}, root)
+			.then((fn) => {
+				if (disposed) fn();
+				else unsubscribe = fn;
+			})
+			.catch((e) => setError(message(e)));
+		void runtime("workspace.state")
+			.then((state) => {
+				if (disposed) return;
+				for (const item of state.drafts ?? []) receiveDraft(item);
+				for (const item of state.files ?? []) receiveFile(item);
+			})
+			.catch((e) => {
+				if (!disposed) setError(message(e));
+			});
+		return () => {
+			disposed = true;
+			unsubscribe?.();
+		};
+	}, [root]);
 	useEffect(() => {
 		if (isTauriAvailable())
 			void invoke("gptcode_dirty", { dirty }).catch(() => {});
@@ -161,6 +294,7 @@ export default function Workbench() {
 	}, []);
 
 	const open = useCallback(async (path: string) => {
+		setViewMode("auto");
 		if (buffersRef.current.some((buffer) => buffer.path === path)) {
 			setActive(path);
 			setDiff(false);
@@ -198,7 +332,12 @@ export default function Workbench() {
 
 	const save = useCallback(async (path: string) => {
 		const buffer = buffersRef.current.find((b) => b.path === path);
-		if (!buffer || buffer.text === buffer.base || saving.current.has(path))
+		if (
+			!buffer ||
+			buffer.deleted ||
+			buffer.text === buffer.base ||
+			saving.current.has(path)
+		)
 			return;
 		saving.current.add(path);
 		setBuffers((previous) =>
@@ -216,6 +355,8 @@ export default function Workbench() {
 								...b,
 								base: content,
 								text: b.text === buffer.text ? content : b.text,
+								external: undefined,
+								agentBase: undefined,
 							}
 						: b,
 				),
@@ -254,6 +395,10 @@ export default function Workbench() {
 			const next = await invoke<string>("gptcode_workspace", { root: picked });
 			for (const tab of listTerminalTabs(previous)) await killTerminalTab(tab);
 			setRoot(next);
+			setDrafts({});
+			setPreviewOpen(false);
+			autoPreview.current = true;
+			setViewMode("auto");
 			setPaused(null);
 			setBreakpoints({});
 			setJump(null);
@@ -303,7 +448,9 @@ export default function Workbench() {
 			}
 			setBuffers((previous) =>
 				previous.map((b) =>
-					b.path === current.path ? { ...b, base: text, text } : b,
+					b.path === current.path
+						? { ...b, base: text, text, external: undefined, deleted: false }
+						: b,
 				),
 			);
 			setError("");
@@ -326,6 +473,30 @@ export default function Workbench() {
 					</span>
 				</div>
 				<div className="flex shrink-0 gap-1">
+					<label className="mr-2 flex items-center gap-1.5 text-[10px] text-muted-foreground">
+						<input
+							type="checkbox"
+							checked={followAgent}
+							onChange={(event) => setFollowAgent(event.target.checked)}
+						/>
+						Segui agente
+					</label>
+					<Button
+						size="sm"
+						variant="ghost"
+						disabled={!root}
+						onClick={() => {
+							autoPreview.current = !previewOpen;
+							setPreviewOpen(!previewOpen);
+							if (!previewOpen && current && /\.html?$/i.test(current.path))
+								void runtime("preview.open", { path: current.path }).catch(
+									(e) => setError(message(e)),
+								);
+						}}
+					>
+						<Eye size={14} />
+						Anteprima
+					</Button>
 					<Button
 						size="sm"
 						variant="ghost"
@@ -391,6 +562,39 @@ export default function Workbench() {
 							<RefreshCw size={12} />
 						</button>
 					</div>
+					{Object.keys(drafts).length > 0 && (
+						<section
+							aria-label="Attività file agente"
+							className="mb-4 border-b border-border pb-3"
+						>
+							<h2 className="mb-2 px-2 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">
+								File dell’agente
+							</h2>
+							{Object.values(drafts)
+								.sort((a, b) => b.version - a.version)
+								.slice(0, 12)
+								.map((item) => (
+									<button
+										key={item.callId}
+										type="button"
+										className="block w-full rounded px-2 py-2 text-left text-xs hover:bg-muted"
+										onClick={() => {
+											setBuffers((previous) => applyDraft(previous, item));
+											setActive(item.path);
+											setViewMode("auto");
+											setDiff(true);
+										}}
+									>
+										<span className="block truncate">{name(item.path)}</span>
+										<span
+											className={`text-[10px] ${item.phase === "saved" ? "text-emerald-500" : "text-sky-400"}`}
+										>
+											{phaseLabel[item.phase]}
+										</span>
+									</button>
+								))}
+						</section>
+					)}
 					{root && (
 						<FileTree
 							key={root}
@@ -400,165 +604,251 @@ export default function Workbench() {
 						/>
 					)}
 				</aside>
-				<section
-					aria-label="Area editor"
-					className="flex min-w-0 flex-1 flex-col"
+				<ResizablePanelGroup
+					direction={vertical ? "vertical" : "horizontal"}
+					className="min-w-0 flex-1"
 				>
-					<div
-						role="tablist"
-						aria-label="File aperti"
-						className="flex h-10 shrink-0 overflow-x-auto border-b border-border"
-					>
-						{buffers.map((buffer) => (
+					<ResizablePanel minSize={20} defaultSize={previewOpen ? 55 : 100}>
+						<section
+							aria-label="Area editor"
+							className="flex h-full min-w-0 flex-1 flex-col"
+						>
 							<div
-								key={buffer.path}
-								className={`flex shrink-0 items-center border-r border-border ${active === buffer.path ? "border-t-2 border-t-sky-400 bg-muted/25" : "text-muted-foreground"}`}
+								role="tablist"
+								aria-label="File aperti"
+								className="flex h-10 shrink-0 overflow-x-auto border-b border-border"
 							>
-								<button
-									role="tab"
-									type="button"
-									aria-selected={active === buffer.path}
-									title={buffer.path}
-									className="flex h-full items-center gap-2 px-3 text-xs"
-									onClick={() => {
-										setActive(buffer.path);
-										setDiff(false);
-									}}
-								>
-									<FileCode2 size={13} />
-									{name(buffer.path)}
-									{buffer.text !== buffer.base && (
-										<span
-											role="img"
-											aria-label="Modificato"
-											className="text-sky-400"
-										>
-											●
-										</span>
-									)}
-								</button>
-								<button
-									type="button"
-									aria-label={`Chiudi ${name(buffer.path)}`}
-									className="mr-2 rounded p-1 hover:bg-muted"
-									onClick={() => close(buffer)}
-								>
-									<X size={12} />
-								</button>
-							</div>
-						))}
-					</div>
-					{current ? (
-						<>
-							<div className="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-border px-3">
-								<span className="truncate text-[11px] text-muted-foreground">
-									{current.path.slice(root.length).replace(/^[\\/]/, "")}
-								</span>
-								<div className="flex shrink-0 gap-1">
-									<Button
-										size="sm"
-										variant="ghost"
-										className="h-7 text-xs"
-										onClick={() => setDiff(!diff)}
-									>
-										<GitCompareArrows size={13} />
-										{diff ? "Editor" : "Diff"}
-									</Button>
-									<Button
-										size="sm"
-										variant="ghost"
-										className="h-7 text-xs"
-										disabled={current.saving}
-										onClick={() => void reload()}
-									>
-										<RefreshCw size={13} />
-										Ricarica
-									</Button>
-									<Button
-										size="sm"
-										className="h-7 text-xs"
-										disabled={current.text === current.base || current.saving}
-										onClick={() => void save(current.path)}
-									>
-										<Save size={13} />
-										{current.saving ? "Salvataggio…" : "Salva"}
-									</Button>
-								</div>
-							</div>
-							<div className="relative min-h-0 flex-1">
 								{buffers.map((buffer) => (
 									<div
 										key={buffer.path}
-										className="absolute inset-0"
-										style={{
-											display:
-												buffer.path === active && !diff ? "block" : "none",
-										}}
+										className={`flex shrink-0 items-center border-r border-border ${active === buffer.path ? "border-t-2 border-t-sky-400 bg-muted/25" : "text-muted-foreground"}`}
 									>
-										<CodeEditor
-											path={buffer.path}
-											breakpoints={breakpoints[buffer.path]}
-											pausedLine={
-												paused?.path.toLowerCase() === buffer.path.toLowerCase()
-													? paused.line
-													: 0
-											}
-											jumpLine={jump?.path === buffer.path ? jump.line : 0}
-											onNavigate={navigate}
-											onServiceError={setError}
-											onBreakpoint={(line) =>
-												setBreakpoints((previous) => {
-													const lines = previous[buffer.path] ?? [];
-													return {
-														...previous,
-														[buffer.path]: lines.includes(line)
-															? lines.filter((n) => n !== line)
-															: [...lines, line].sort((a, b) => a - b),
-													};
-												})
-											}
-											value={buffer.text}
-											onChange={(text) =>
-												setBuffers((previous) =>
-													previous.map((b) =>
-														b.path === buffer.path ? { ...b, text } : b,
-													),
-												)
-											}
-											onSave={() => void save(buffer.path)}
-										/>
+										<button
+											role="tab"
+											type="button"
+											aria-selected={active === buffer.path}
+											title={buffer.path}
+											className="flex h-full items-center gap-2 px-3 text-xs"
+											onClick={() => {
+												setActive(buffer.path);
+												setViewMode("auto");
+												setDiff(false);
+											}}
+										>
+											<FileCode2 size={13} />
+											{name(buffer.path)}
+											{buffer.text !== buffer.base && (
+												<span
+													role="img"
+													aria-label="Modificato"
+													className="text-sky-400"
+												>
+													●
+												</span>
+											)}
+										</button>
+										<button
+											type="button"
+											aria-label={`Chiudi ${name(buffer.path)}`}
+											className="mr-2 rounded p-1 hover:bg-muted"
+											onClick={() => close(buffer)}
+										>
+											<X size={12} />
+										</button>
 									</div>
 								))}
-								{diff && (
-									<div className="absolute inset-0 overflow-auto">
-										<CodeDiff
-											path={current.path}
-											oldText={current.base}
-											newText={current.text}
-										/>
+							</div>
+							{current ? (
+								<>
+									{draft && (
+										<div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-sky-400/20 bg-sky-400/5 px-3 py-1 text-[11px]">
+											<span aria-live="polite">
+												{phaseLabel[draft.phase]}
+												{proposing ? " · proposta non salvata" : ""}
+											</span>
+											{draft.phase !== "saved" && (
+												<Button
+													size="sm"
+													variant="ghost"
+													className="h-6 text-[10px]"
+													onClick={() =>
+														setViewMode(proposing ? "buffer" : "proposal")
+													}
+												>
+													{proposing ? "Il mio buffer" : "Proposta agente"}
+												</Button>
+											)}
+										</div>
+									)}
+									{current.external !== undefined && (
+										<div
+											role="alert"
+											className="border-b border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs"
+										>
+											Il file è cambiato su disco. Il tuo buffer non salvato è
+											stato conservato. Usa Diff per confrontarlo.
+										</div>
+									)}
+									<div className="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-border px-3">
+										<span className="truncate text-[11px] text-muted-foreground">
+											{current.path.slice(root.length).replace(/^[\\/]/, "")}
+										</span>
+										<div className="flex shrink-0 gap-1">
+											<Button
+												size="sm"
+												variant="ghost"
+												className="h-7 text-xs"
+												onClick={() => setDiff(!diff)}
+											>
+												<GitCompareArrows size={13} />
+												{diff ? "Editor" : "Diff"}
+											</Button>
+											<Button
+												size="sm"
+												variant="ghost"
+												className="h-7 text-xs"
+												disabled={current.saving || proposing}
+												onClick={() => void reload()}
+											>
+												<RefreshCw size={13} />
+												Ricarica
+											</Button>
+											<Button
+												size="sm"
+												className="h-7 text-xs"
+												disabled={
+													current.text === current.base ||
+													current.saving ||
+													proposing ||
+													current.deleted
+												}
+												onClick={() => void save(current.path)}
+											>
+												<Save size={13} />
+												{current.saving ? "Salvataggio…" : "Salva"}
+											</Button>
+										</div>
 									</div>
-								)}
-							</div>
+									<div className="relative min-h-0 flex-1">
+										{buffers.map((buffer) => (
+											<div
+												key={buffer.path}
+												className="absolute inset-0"
+												style={{
+													display:
+														buffer.path === active && !diff && !proposing
+															? "block"
+															: "none",
+												}}
+											>
+												<CodeEditor
+													path={buffer.path}
+													readOnly={buffer.deleted}
+													breakpoints={breakpoints[buffer.path]}
+													pausedLine={
+														paused?.path.toLowerCase() ===
+														buffer.path.toLowerCase()
+															? paused.line
+															: 0
+													}
+													jumpLine={jump?.path === buffer.path ? jump.line : 0}
+													onNavigate={navigate}
+													onServiceError={setError}
+													onBreakpoint={(line) =>
+														setBreakpoints((previous) => {
+															const lines = previous[buffer.path] ?? [];
+															return {
+																...previous,
+																[buffer.path]: lines.includes(line)
+																	? lines.filter((n) => n !== line)
+																	: [...lines, line].sort((a, b) => a - b),
+															};
+														})
+													}
+													value={buffer.text}
+													onChange={(text) =>
+														setBuffers((previous) =>
+															previous.map((b) =>
+																b.path === buffer.path ? { ...b, text } : b,
+															),
+														)
+													}
+													onSave={() => void save(buffer.path)}
+												/>
+											</div>
+										))}
+										{proposing && draft && !diff && (
+											<div className="absolute inset-0">
+												<CodeEditor
+													key={`proposal:${draft.callId}`}
+													path={draft.path}
+													value={draft.after}
+													onChange={() => {}}
+													onSave={() => {}}
+													readOnly
+													followTail={followAgent}
+												/>
+											</div>
+										)}
+										{diff && (
+											<section
+												aria-label="Differenze file"
+												className="absolute inset-0 overflow-auto"
+											>
+												<CodeDiff
+													path={current.path}
+													oldText={
+														proposing && draft
+															? (draft.before ?? "")
+															: current.external !== undefined
+																? (current.external ?? "")
+																: (current.agentBase ?? current.base)
+													}
+													newText={displayedText}
+												/>
+											</section>
+										)}
+									</div>
+								</>
+							) : (
+								<div className="grid flex-1 place-items-center text-center">
+									<div className="max-w-sm px-6">
+										<FileCode2
+											className="mx-auto mb-5 text-sky-400"
+											size={32}
+										/>
+										<h1 className="mb-3 text-xl font-medium tracking-tight">
+											Il tuo codice. Il tuo agente.
+										</h1>
+										<p className="text-sm leading-relaxed text-muted-foreground">
+											Apri un file dal progetto per iniziare. Avvia GPTCode per
+											lavorare con il tuo CLI, oppure un terminale per eseguire
+											i comandi.
+										</p>
+										<p className="mt-5 text-xs text-muted-foreground">
+											Ctrl+S salva · Ctrl+F cerca · Ctrl+H sostituisce
+										</p>
+									</div>
+								</div>
+							)}
+						</section>
+					</ResizablePanel>
+					{previewOpen && (
+						<>
+							<ResizableHandle withHandle />
+							<ResizablePanel minSize={20} defaultSize={45}>
+								<PreviewPanel
+									root={root}
+									currentPath={current?.path}
+									onClose={() => {
+										autoPreview.current = false;
+										setPreviewOpen(false);
+									}}
+								/>
+							</ResizablePanel>
 						</>
-					) : (
-						<div className="grid flex-1 place-items-center text-center">
-							<div className="max-w-sm px-6">
-								<FileCode2 className="mx-auto mb-5 text-sky-400" size={32} />
-								<h1 className="mb-3 text-xl font-medium tracking-tight">
-									Il tuo codice. Il tuo agente.
-								</h1>
-								<p className="text-sm leading-relaxed text-muted-foreground">
-									Apri un file dal progetto per iniziare. Avvia GPTCode per
-									lavorare con il tuo CLI, oppure un terminale per eseguire i
-									comandi.
-								</p>
-								<p className="mt-5 text-xs text-muted-foreground">
-									Ctrl+S salva · Ctrl+F cerca · Ctrl+H sostituisce
-								</p>
-							</div>
-						</div>
 					)}
-				</section>
+				</ResizablePanelGroup>
 				{root && (
 					<ServicesPanel
 						key={root}
@@ -567,8 +857,8 @@ export default function Workbench() {
 							current
 								? {
 										path: current.path,
-										text: current.text,
-										dirty: current.text !== current.base,
+										text: displayedText,
+										dirty: proposing || current.text !== current.base,
 									}
 								: undefined
 						}

@@ -108,3 +108,40 @@ test('Agente GPTCode reale con provider locale simulato: permesso negato e poi a
   assert.equal(done.text, 'LOCAL_AGENT_DONE'); assert.equal(readFileSync(proof, 'utf8'), 'REAL_AGENT_WRITE');
   assert.ok((await client.request('chat.history')).length >= 2);
 });
+
+test('stream reale prima della fine del modello: codice e anteprima proposti, nessuna scrittura prima del consenso', { timeout: 60000 }, async t => {
+  const cli = process.env.GPTCODE_CLI_PATH; if (!cli) return t.skip('GPTCODE_CLI_PATH richiesto');
+  const root = mkdtempSync(join(tmpdir(), 'gptcode-desktop-agent-'));
+  const home = join(root, 'home'); mkdirSync(join(home, '.gptcode'), { recursive: true }); mkdirSync(join(root, '.gptcode'));
+  const path = join(root, 'index.html'), first = '<!doctype html><h1>FASE_UNO</h1>', content = first + '<p>FASE_DUE</p>';
+  let release, modelRequests = 0;
+  const server = createServer(async (request, response) => {
+    let body = ''; for await (const part of request) body += part; const input = JSON.parse(body); modelRequests++;
+    if (input.messages.some(m => m.role === 'tool')) { response.writeHead(200, { 'content-type': 'application/json' }); response.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'STREAM_OK' }, finish_reason: 'stop' }] })); return; }
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    const full = JSON.stringify({ file_path: path, content }), prefix = JSON.stringify({ file_path: path, content: first }).slice(0, -2);
+    const packet = delta => response.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta }] })}\n\n`);
+    packet({ tool_calls: [{ index: 0, id: 'stream-write', function: { name: 'Write', arguments: prefix } }] });
+    release = () => { packet({ tool_calls: [{ index: 0, function: { arguments: full.slice(prefix.length) } }] }); response.end(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] })}\n\ndata: [DONE]\n\n`); };
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  writeFileSync(join(home, '.gptcode/providers.json'), JSON.stringify({ version: 1, providers: { fixture: { baseUrl: `http://127.0.0.1:${server.address().port}/v1`, protocol: 'chat-completions', models: [{ id: 'test-model' }] } } }));
+  writeFileSync(join(root, '.gptcode/settings.json'), JSON.stringify({ model: 'fixture/test-model', checkpoints: false, autoCompact: false, nativeCapabilities: { enabled: false }, permissions: { allow: [], deny: [], ask: ['Write'] } }));
+  const client = new Client(root, { GPTCODE_CLI_PATH: cli, USERPROFILE: home, HOME: home, OPENAI_API_KEY: '', GPTCODE_MODEL: 'fixture/test-model', CODEX_AUTH_PATH: join(home, 'absent.json') });
+  t.after(async () => { release?.(); await client.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); cleanup(root); });
+  await client.request('chat.send', { prompt: 'Genera il sito con lo stream di prova.', model: 'fixture/test-model' });
+  const partial = await client.wait('workspace.draft', event => event.phase === 'streaming' && event.after.includes('FASE_UNO'));
+  assert.equal(partial.after, first); assert.equal(existsSync(path), false);
+  const preview = await client.wait('preview.state', event => event.url && event.proposed);
+  assert.equal(await (await fetch(preview.url)).text(), first);
+  assert.equal(client.events.some(event => event.event === 'chat.request'), false);
+  release(); release = null;
+  const permission = await client.wait('chat.request');
+  assert.equal(existsSync(path), false);
+  const complete = await client.wait('workspace.draft', event => event.phase === 'approval' && event.after.includes('FASE_DUE'));
+  assert.equal(complete.after, content);
+  await client.request('chat.answer', { id: permission.id, answer: 'allow' }); await client.wait('chat.idle');
+  assert.equal(readFileSync(path, 'utf8'), content); assert.equal(modelRequests, 2);
+  writeFileSync(path, content + '<footer>AGGIORNATO</footer>');
+  await client.wait('workspace.file', event => event.text?.includes('AGGIORNATO'));
+});

@@ -1,9 +1,10 @@
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
+import { observeToolStream } from './stream-tap.mjs';
 
 export class ChatService {
-  constructor(root, cli, emit) { this.root = root; this.cli = cli; this.emit = emit; this.questions = new Map(); this.input = []; this.busy = false; }
+  constructor(root, cli, emit, files) { this.root = root; this.cli = cli; this.emit = emit; this.files = files; this.questions = new Map(); this.input = []; this.busy = false; }
   load(name) { return import(pathToFileURL(join(dirname(dirname(this.cli)), 'src', `${name}.mjs`)).href); }
   async status() {
     const { loadConfig, GLOBAL_DIR } = await this.load('config');
@@ -37,7 +38,8 @@ export class ChatService {
     this.agents = loadAgents(cfg.cwd, cfg.globalDir);
     const ui = new Proxy({
       onText: text => { this.currentText = (this.currentText ?? '') + text; this.emit('chat.text', { text }); }, onThinking: text => this.emit('chat.reasoning', { text }),
-      onToolStart: data => this.emit('chat.tool', { ...data, phase: 'start' }), onToolEnd: data => this.emit('chat.tool', { ...data, phase: 'end' }),
+      onToolStart: data => { const event = { ...data, phase: 'start' }; this.files?.tool(event); this.emit('chat.tool', event); },
+      onToolEnd: data => { const event = { ...data, phase: 'end' }; this.files?.tool(event); this.emit('chat.tool', event); },
       onError: error => this.emit('chat.error', { message: error?.message ?? String(error) }),
       onUsage: usage => this.emit('chat.usage', usage), onTodos: todos => this.emit('chat.todos', { todos }),
       askPermission: request => this.question('permission', request), askUser: request => this.question('question', request),
@@ -48,6 +50,8 @@ export class ChatService {
       await this.extensions.start();
       const hooks = new HookRunner(mergeExtensionHooks(cfg.hooks, getPluginExtensions(cfg.globalDir).hooks), { cwd: cfg.cwd, env: cfg.env });
       this.agent = new Agent({ creds, cfg, hooks, skills: this.skills, agents: this.agents, commands: this.commands, mcpClients: this.extensions.clients, ui, log: text => this.emit('chat.log', { text }) });
+      const runTurn = this.agent._runTurn.bind(this.agent);
+      this.agent._runTurn = (...args) => observeToolStream(call => this.files?.stream(call), () => runTurn(...args));
       this.agent.sessionId = this.session.id; this.agent._git = createGitHelper({ cwd: this.root });
       this.extensions.attach(this.agent, { skillCatalog: skillsModule.loadSkillCatalog(cfg.cwd, cfg.globalDir) });
       this.agent.registerSkillTool();
@@ -68,15 +72,15 @@ export class ChatService {
   async send(prompt, options) {
     if (this.busy) throw Error('Attendi il termine della risposta o premi Stop');
     if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 100000) throw Error('Messaggio vuoto o troppo lungo');
-    this.busy = true; this.currentText = '';
+    this.busy = true; this.currentText = ''; if (this.files) this.files.agentRunning = true;
     try {
       await this.initialize(options);
       if (this.agent._abortController?.signal.aborted) this.agent.orchestrator.reset();
       this.turn = this.run(prompt).catch(error => this.emit('chat.error', { message: error.message })).finally(() => {
-        this.busy = false; this.currentText = ''; for (const item of this.questions.values()) item.resolve('deny'); this.questions.clear(); this.emit('chat.idle', {});
+        this.busy = false; this.currentText = ''; if (this.files) this.files.agentRunning = false; for (const item of this.questions.values()) item.resolve('deny'); this.questions.clear(); this.files?.cancel(); this.emit('chat.idle', {});
       });
       return { sessionId: this.session.id };
-    } catch (e) { this.busy = false; throw e; }
+    } catch (e) { this.busy = false; if (this.files) this.files.agentRunning = false; throw e; }
   }
   async run(prompt) {
     const submitted = await this.mods.submit(prompt);

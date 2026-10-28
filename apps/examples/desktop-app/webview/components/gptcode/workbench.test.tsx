@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act } from "react";
+import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import Workbench from "./workbench";
@@ -14,6 +14,19 @@ vi.mock("@/lib/terminal-sessions", () => ({
 }));
 vi.mock("@/components/terminal-panel", () => ({ TerminalPanel: () => null }));
 vi.mock("./services-panel", () => ({ default: () => null }));
+vi.mock("@/lib/gptcode-runtime", () => ({
+	runtime: async () => ({ drafts: [], files: [] }),
+	subscribeRuntime: async () => () => {},
+}));
+vi.mock("@/components/ui/resizable", () => ({
+	ResizablePanelGroup: ({ children }: { children: ReactNode }) => (
+		<div>{children}</div>
+	),
+	ResizablePanel: ({ children }: { children: ReactNode }) => (
+		<div>{children}</div>
+	),
+	ResizableHandle: () => null,
+}));
 vi.mock("@/components/views/chat/highlighted-code", () => ({
 	CodeDiff: () => null,
 }));
@@ -39,6 +52,14 @@ let host: HTMLDivElement;
 let root: Root;
 beforeEach(async () => {
 	Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+	Object.defineProperty(window, "matchMedia", {
+		writable: true,
+		value: () => ({
+			matches: false,
+			addEventListener() {},
+			removeEventListener() {},
+		}),
+	});
 	mock.conflict = false;
 	mock.invoke.mockReset().mockImplementation(async (command: string) => {
 		if (command === "gptcode_workspace") return "D:\\project";

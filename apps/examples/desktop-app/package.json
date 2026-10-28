@@ -4,7 +4,7 @@
 	"private": true,
 	"scripts": {
 		"check:gptcode": "tsc --noEmit -p tsconfig.gptcode.json",
-		"test:gptcode": "node --test --test-concurrency=1 gptcode-runtime/runtime.test.mjs",
+		"test:gptcode": "node --test --test-concurrency=1 gptcode-runtime/runtime.test.mjs gptcode-runtime/live-files.test.mjs",
 		"build:gptcode": "bun run scripts/build-gptcode.ts",
 		"package:gptcode": "tauri build --config src-tauri/tauri.gptcode.release.conf.json",
 		"build:ui": "bun -F @cline/ui build",

@@ -35,6 +35,8 @@ export default function CodeEditor({
 	onNavigate,
 	onBreakpoint,
 	onServiceError,
+	readOnly = false,
+	followTail = false,
 }: {
 	path: string;
 	value: string;
@@ -46,8 +48,17 @@ export default function CodeEditor({
 	onNavigate?: (path: string, line: number) => void;
 	onBreakpoint?: (line: number) => void;
 	onServiceError?: (message: string) => void;
+	readOnly?: boolean;
+	followTail?: boolean;
 }) {
 	const viewRef = useRef<EditorView | null>(null);
+	useEffect(() => {
+		const view = viewRef.current;
+		if (view && followTail && view.state.doc.toString() === value)
+			view.dispatch({
+				effects: EditorView.scrollIntoView(view.state.doc.length, { y: "end" }),
+			});
+	}, [value, followTail]);
 	useEffect(() => {
 		const view = viewRef.current;
 		if (view && jumpLine > 0) {
@@ -70,7 +81,7 @@ export default function CodeEditor({
 					jsx: true,
 					typescript: ["ts", "tsx", "mts", "cts"].includes(ext ?? ""),
 				}),
-				...languageSupport(path, onNavigate, onServiceError),
+				...(readOnly ? [] : languageSupport(path, onNavigate, onServiceError)),
 			];
 		if (ext === "json") return [json()];
 		if (ext === "py") return [python()];
@@ -79,7 +90,7 @@ export default function CodeEditor({
 		if (ext === "html") return [html()];
 		if (ext === "md") return [markdown()];
 		return [];
-	}, [path, onNavigate, onServiceError]);
+	}, [path, onNavigate, onServiceError, readOnly]);
 	const debugExtensions = useMemo(
 		() => [
 			gutter({
@@ -124,6 +135,8 @@ export default function CodeEditor({
 			<CodeMirror
 				aria-label={`Editor ${path}`}
 				value={value}
+				readOnly={readOnly}
+				editable={!readOnly}
 				height="100%"
 				theme="dark"
 				extensions={[...extensions, ...debugExtensions]}
